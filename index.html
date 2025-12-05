@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Layer Avatar Editor — Full Layer Panel</title>
+<style>
+:root { --bg:#f8f6ff; --card:#fff; --accent:#7b2cff; }
+body { font-family: Inter, system-ui; background: var(--bg); margin:0; padding:20px; color:#222; }
+.wrap { display:flex; gap:20px; }
+.menu { width:280px; background: var(--card); padding:16px; border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,0.08); max-height:90vh; overflow:auto;}
+.menu h2 { margin-top:0; }
+.menu button, .menu input[type=file] { width:100%; margin-bottom:8px; padding:8px; border-radius:8px; border:1px solid #ddd; cursor:pointer; }
+.menu button { background:var(--accent); color:white; border:none; }
+.canvas-container { flex:1; position:relative; }
+canvas { background:#fff; border-radius:12px; display:block; margin:auto; touch-action:none; }
+
+/* Layer panel */
+#layerList { margin-top:12px; border-top:1px solid #ddd; padding-top:8px; }
+.layer-item { display:flex; justify-content:space-between; align-items:center; padding:4px 8px; border:1px solid #eee; margin-bottom:4px; border-radius:6px; background:#fdfdfd; cursor:grab; }
+.layer-item.active { border-color: var(--accent); background:#f0e5ff; }
+.layer-controls { display:flex; gap:4px; }
+.layer-controls button { background:red; color:white; border:none; border-radius:4px; padding:2px 6px; font-size:12px; cursor:pointer; }
+.layer-controls .eye-btn { background:green; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="menu">
+    <h2>Layer Editor</h2>
+    <button id="addLayerBtn">Thêm Layer</button>
+    <button id="removeBgBtn">Xóa nền Layer</button>
+    <button id="cropBtn">Crop Layer</button>
+    <button id="exportBtn">Xuất PNG</button>
+
+    <h3>Layer Panel</h3>
+    <div id="layerList"></div>
+  </div>
+
+  <div class="canvas-container">
+    <canvas id="canvas" width="800" height="800"></canvas>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const layerListDiv = document.getElementById("layerList");
+
+let layers = [];
+let activeLayer = null;
+let isDragging = false;
+let dragStart = {x:0,y:0};
+let lastMouse = {x:0,y:0};
+let dragLayerIndex = null;
+
+// Cập nhật Layer Panel
+function updateLayerPanel(){
+  layerListDiv.innerHTML="";
+  layers.slice().reverse().forEach((layer,i)=>{
+    const div = document.createElement("div");
+    div.className="layer-item" + (layer===activeLayer?" active":"");
+    div.draggable=true;
+    const visibleIcon = layer.visible?"👁":"🚫";
+    div.innerHTML = `<span>Layer ${layers.length-i}</span>
+      <div class="layer-controls">
+        <button class="eye-btn">${visibleIcon}</button>
+        <button>✕</button>
+      </div>`;
+    
+    // chọn layer
+    div.onclick = (e)=>{ if(!e.target.classList.contains("eye-btn") && !e.target.textContent.includes("✕")) { activeLayer=layer; updateLayerPanel(); draw(); } };
+    
+    // xóa layer
+    div.querySelector(".layer-controls button:nth-child(2)").onclick = (e)=>{
+      e.stopPropagation();
+      layers.splice(layers.indexOf(layer),1);
+      if(activeLayer===layer) activeLayer=layers[layers.length-1]||null;
+      updateLayerPanel();
+      draw();
+    };
+
+    // bật/tắt visibility
+    div.querySelector(".eye-btn").onclick = (e)=>{
+      e.stopPropagation();
+      layer.visible = !layer.visible;
+      updateLayerPanel();
+      draw();
+    };
+
+    // kéo thả thay đổi thứ tự
+    div.ondragstart = (e)=>{ dragLayerIndex = layers.indexOf(layer); };
+    div.ondragover = (e)=>{ e.preventDefault(); };
+    div.ondrop = (e)=>{ 
+      e.preventDefault(); 
+      const dropIndex = layers.indexOf(layer);
+      if(dragLayerIndex === null) return;
+      const moved = layers.splice(dragLayerIndex,1)[0];
+      layers.splice(dropIndex,0,moved);
+      dragLayerIndex = null;
+      updateLayerPanel();
+      draw();
+    };
+
+    layerListDiv.appendChild(div);
+  });
+}
+
+// Thêm Layer
+document.getElementById("addLayerBtn").addEventListener("click", ()=>{
+  const input = document.createElement("input");
+  input.type="file";
+  input.accept="image/*";
+  input.onchange = e=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const img = new Image();
+    img.onload = ()=>{
+      const layer = {img, x:canvas.width/2- img.width/4, y:canvas.height/2 - img.height/4, scale:0.5, width:img.width, height:img.height, crop:null, visible:true};
+      layers.push(layer);
+      activeLayer = layer;
+      updateLayerPanel();
+      draw();
+    };
+    img.src = URL.createObjectURL(file);
+  };
+  input.click();
+});
+
+// Xóa nền
+document.getElementById("removeBgBtn").addEventListener("click", ()=>{
+  if(!activeLayer) return alert("Chọn Layer trước!");
+  const tmpCanvas = document.createElement("canvas");
+  tmpCanvas.width = activeLayer.width;
+  tmpCanvas.height = activeLayer.height;
+  const tmpCtx = tmpCanvas.getContext("2d");
+  tmpCtx.drawImage(activeLayer.img,0,0);
+  const imgData = tmpCtx.getImageData(0,0,activeLayer.width,activeLayer.height);
+  for(let i=0;i<imgData.data.length;i+=4){
+    const r = imgData.data[i];
+    const g = imgData.data[i+1];
+    const b = imgData.data[i+2];
+    if(r>240 && g>240 && b>240){
+      imgData.data[i+3]=0;
+    }
+  }
+  tmpCtx.putImageData(imgData,0,0);
+  const newImg = new Image();
+  newImg.onload = ()=>{ activeLayer.img = newImg; draw(); };
+  newImg.src = tmpCanvas.toDataURL();
+});
+
+// Crop Layer
+let cropping = false;
+let cropStart = {x:0,y:0};
+let cropRect = null;
+document.getElementById("cropBtn").addEventListener("click", ()=>{
+  if(!activeLayer) return alert("Chọn Layer trước!");
+  cropping=true; alert("Kéo chuột trên canvas để crop.");
+});
+
+// Drag & zoom / crop handling
+canvas.addEventListener("mousedown", e=>{
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  lastMouse={x:mx,y:my};
+  if(cropping){
+    cropStart={x:mx,y:my};
+    cropRect={x:mx,y:my,width:0,height:0};
+    isDragging=true;
+  } else if(activeLayer){
+    isDragging=true;
+    dragStart={x:mx - activeLayer.x, y:my - activeLayer.y};
+  }
+});
+
+canvas.addEventListener("mousemove", e=>{
+  if(!isDragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  if(cropping){
+    cropRect.width = mx - cropStart.x;
+    cropRect.height = my - cropStart.y;
+  } else if(activeLayer){
+    activeLayer.x = mx - dragStart.x;
+    activeLayer.y = my - dragStart.y;
+  }
+  draw();
+});
+
+canvas.addEventListener("mouseup", e=>{
+  if(cropping && cropRect){
+    const sx = Math.min(cropRect.x,cropRect.x+cropRect.width)-activeLayer.x;
+    const sy = Math.min(cropRect.y,cropRect.y+cropRect.height)-activeLayer.y;
+    const sw = Math.abs(cropRect.width);
+    const sh = Math.abs(cropRect.height);
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width=sw; tmpCanvas.height=sh;
+    tmpCanvas.getContext("2d").drawImage(activeLayer.img,sx,sy,sw,sh,0,0,sw,sh);
+    const newImg = new Image();
+    newImg.onload = ()=>{ activeLayer.img=newImg; activeLayer.width=sw; activeLayer.height=sh; draw(); };
+    newImg.src = tmpCanvas.toDataURL();
+    cropping=false; cropRect=null;
+  }
+  isDragging=false;
+});
+
+canvas.addEventListener("wheel", e=>{
+  if(!activeLayer) return;
+  e.preventDefault();
+  const delta = e.deltaY<0?1.05:0.95;
+  activeLayer.scale *= delta;
+  draw();
+});
+
+// Xuất PNG
+document.getElementById("exportBtn").addEventListener("click", ()=>{
+  const exportCanvas = document.createElement("canvas");
+  exportCanvas.width = canvas.width;
+  exportCanvas.height = canvas.height;
+  const exportCtx = exportCanvas.getContext("2d");
+  layers.forEach(l=>{
+    if(!l.visible) return;
+    exportCtx.save();
+    exportCtx.translate(l.x,l.y);
+    exportCtx.scale(l.scale,l.scale);
+    exportCtx.drawImage(l.img,0,0);
+    exportCtx.restore();
+  });
+  const a=document.createElement("a");
+  a.href=exportCanvas.toDataURL("image/png");
+  a.download="multi_layer_avatar.png";
+  a.click();
+});
+
+// Draw
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  layers.forEach(l=>{
+    if(!l.visible) return;
+    ctx.save();
+    ctx.translate(l.x,l.y);
+    ctx.scale(l.scale,l.scale);
+    ctx.drawImage(l.img,0,0);
+    ctx.restore();
+  });
+  if(cropping && cropRect){
+    ctx.strokeStyle="red";
+    ctx.lineWidth=2;
+    ctx.strokeRect(cropRect.x,cropRect.y,cropRect.width,cropRect.height);
+  }
+}
+
+updateLayerPanel();
+</script>
+</body>
+</html>
